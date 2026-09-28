@@ -216,3 +216,11 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Datasets and generated audio
+data/raw/
+data/wav/
+data/birdclef/
+outputs/
+
+.DS_Store
