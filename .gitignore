@@ -222,5 +222,7 @@ data/raw/
 data/wav/
 data/birdclef/
 outputs/
+bird_monitoring.db
+data/recordings/
 
 .DS_Store

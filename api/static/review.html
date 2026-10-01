@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bird Observation Review</title>
+
+    <style>
+        body {
+            font-family: system-ui, sans-serif;
+            max-width: 1100px;
+            margin: 0 auto;
+            padding: 2rem;
+        }
+
+        h1 {
+            margin-bottom: 0.5rem;
+        }
+
+        .observation {
+            margin-top: 2rem;
+        }
+
+        .metadata {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 0.75rem;
+            margin: 1.5rem 0;
+        }
+
+        .metadata div {
+            padding: 0.75rem;
+            background: #f3f3f3;
+            border-radius: 6px;
+        }
+
+        .spectrogram {
+            width: 100%;
+            border: 1px solid #ccc;
+            border-radius: 6px;
+        }
+
+        audio {
+            width: 100%;
+            margin: 1rem 0;
+        }
+
+        .actions {
+            display: flex;
+            gap: 1rem;
+        }
+
+        button {
+            padding: 0.75rem 1.5rem;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 1rem;
+        }
+
+        button:hover {
+            opacity: 0.85;
+        }
+
+        .status {
+            margin-top: 1rem;
+            font-weight: 600;
+        }
+
+        .error {
+            color: #b00020;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>Bird Observation Review</h1>
+
+    <div id="content">
+        Loading observations...
+    </div>
+
+    <script>
+        let observations = [];
+        let currentIndex = 0;
+
+        async function loadObservations() {
+            const response = await fetch(
+                "/observations?review_status=unreviewed"
+            );
+
+            if (!response.ok) {
+                throw new Error("Failed to load observations");
+            }
+
+            observations = await response.json();
+
+            if (observations.length === 0) {
+                document.getElementById("content").innerHTML =
+                    "<p>No observations currently need review.</p>";
+                return;
+            }
+
+            await showObservation();
+        }
+
+        async function showObservation() {
+            const observation = observations[currentIndex];
+
+            const detailResponse = await fetch(
+                `/observations/${observation.id}`
+            );
+
+            if (!detailResponse.ok) {
+                throw new Error("Failed to load observation details");
+            }
+
+            const detail = await detailResponse.json();
+
+            document.getElementById("content").innerHTML = `
+                <div class="observation">
+                    <h2>${detail.species}</h2>
+
+                    <div class="metadata">
+                        <div>
+                            <strong>Confidence</strong><br>
+                            ${(detail.confidence * 100).toFixed(1)}%
+                        </div>
+
+                        <div>
+                            <strong>Model</strong><br>
+                            ${detail.model_version}
+                        </div>
+
+                        <div>
+                            <strong>Recording</strong><br>
+                            ${detail.filename}
+                        </div>
+
+                        <div>
+                            <strong>Time</strong><br>
+                            ${detail.start_seconds.toFixed(1)}s –
+                            ${detail.end_seconds.toFixed(1)}s
+                        </div>
+
+                        <div>
+                            <strong>Location</strong><br>
+                            ${detail.latitude ?? "Unknown"},
+                            ${detail.longitude ?? "Unknown"}
+                        </div>
+
+                        <div>
+                            <strong>Review</strong><br>
+                            ${detail.review_status}
+                        </div>
+                    </div>
+
+                    <h3>Spectrogram</h3>
+
+                    <img
+                        class="spectrogram"
+                        src="/observations/${detail.id}/spectrogram"
+                        alt="Observation spectrogram"
+                    >
+
+                    <h3>Audio</h3>
+
+                    <audio controls>
+                        <source
+                            src="/observations/${detail.id}/audio"
+                            type="audio/wav"
+                        >
+                        Your browser does not support audio playback.
+                    </audio>
+
+                    <div class="actions">
+                        <button onclick="review('confirmed')">
+                            Confirm
+                        </button>
+
+                        <button onclick="review('rejected')">
+                            Reject
+                        </button>
+
+                        <button onclick="review('uncertain')">
+                            Uncertain
+                        </button>
+                    </div>
+
+                    <div id="status" class="status"></div>
+                </div>
+            `;
+        }
+
+        async function review(reviewStatus) {
+            const observation = observations[currentIndex];
+
+            const response = await fetch(
+                `/observations/${observation.id}/review`,
+                {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json"
+                    },
+                    body: JSON.stringify({
+                        review_status: reviewStatus
+                    })
+                }
+            );
+
+            if (!response.ok) {
+                document.getElementById("status").innerHTML =
+                    `<span class="error">
+                        Failed to save review.
+                    </span>`;
+                return;
+            }
+
+            currentIndex++;
+
+            if (currentIndex >= observations.length) {
+                document.getElementById("content").innerHTML = `
+                    <h2>Review complete</h2>
+                    <p>There are no more observations in the current queue.</p>
+                `;
+                return;
+            }
+
+            await showObservation();
+        }
+
+        loadObservations().catch(error => {
+            document.getElementById("content").innerHTML =
+                `<p class="error">${error.message}</p>`;
+        });
+    </script>
+</body>
+</html>
