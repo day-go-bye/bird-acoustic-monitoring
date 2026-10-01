@@ -1,90 +1,120 @@
 # Bird Acoustic Monitoring
 
-An end-to-end prototype for passive acoustic biodiversity monitoring, combining wildlife audio analysis with a small production-style data platform.
+An end-to-end prototype for **passive acoustic biodiversity monitoring**.
 
-The project explores how machine-learning models can be integrated into a workflow where field recordings are ingested, processed asynchronously, converted into model observations, and reviewed by a human.
+The project combines a bird-call ML model with a small production-oriented platform for ingesting recordings, running asynchronous analysis, storing model observations, and putting those predictions through a human review workflow.
 
-## Why this project
-
-Passive acoustic monitoring can produce large volumes of wildlife recordings that are difficult to analyze manually. A useful system therefore needs more than a classifier: it needs infrastructure for ingesting recordings, running analysis, storing observations and model provenance, and allowing domain experts to review automated results.
-
-This project is a small-scale implementation of that workflow.
-
-## Architecture
+## What it does
 
 ```text
-                    Field Recording
-                          |
-                          v
-                  +---------------+
-                  |  Recording API |
-                  +-------+-------+
-                          |
-                          v
-                  +---------------+
-                  | Local Storage |
-                  +-------+-------+
-                          |
-                          v
-                  +---------------+
-                  | Processing Job|
-                  |     Queue     |
-                  +-------+-------+
-                          |
-                          v
-                  +---------------+
-                  | ML Inference  |
-                  +-------+-------+
-                          |
-                          v
-                  +---------------+
-                  | Observations  |
-                  | + provenance  |
-                  +-------+-------+
-                          |
-                          v
-                  +---------------+
-                  | Human Review  |
-                  |  UI / API     |
-                  +---------------+
+Recording
+    ↓
+Recording API
+    ↓
+Processing Job
+    ↓
+ML Inference
+    ↓
+Observation + Model Provenance
+    ↓
+Human Review
+    ↓
+Confirmed / Rejected / Uncertain
 ```
 
-The current implementation uses SQLite and local filesystem storage so that the entire system can run locally. The interfaces are designed so that these components could later be replaced with managed database and object-storage services.
+The system currently runs locally using SQLite and filesystem storage, but the API, worker, storage, and inference layers are separated so the components can evolve independently.
 
-## Current capabilities
+### Human review
 
-### Audio ingestion
+The browser-based review interface lets a reviewer inspect:
 
-The FastAPI service accepts audio recordings together with metadata including:
+* predicted species
+* model confidence
+* model version
+* recording timestamp and location
+* the exact audio segment associated with the prediction
+* a generated spectrogram
 
-* recording timestamp
-* latitude / longitude
-* duration
-* source
-* filename
+The reviewer can then mark the prediction **confirmed**, **rejected**, or **uncertain**.
 
-Audio is stored using server-generated filenames rather than trusting client-provided paths.
+Reviewed observations automatically leave the active review queue.
 
-### Asynchronous processing
+Model predictions are treated as provisional observations rather than ground truth. The review interface lets a user inspect each prediction alongside the exact audio segment and spectrogram before accepting or rejecting it.
 
-Recordings create processing jobs rather than performing ML inference directly inside the API request.
+![Bird observation review interface](docs/review-ui.png)
+![Bird observation review interface](docs/review-ui-spectrogram.png)
 
-A separate worker:
+## API
 
-1. claims a queued processing job
-2. loads the recording
-3. runs model inference
-4. creates observation records
-5. stores model version information
-6. marks the job and recording as completed
+The platform exposes a small REST API:
 
-Failures are persisted on the processing job so they can be inspected rather than disappearing with a request.
+```text
+POST /recordings
+    Ingest an audio recording and metadata.
 
-### Machine-learning inference
+POST /recordings/{id}/process
+    Create an asynchronous processing job.
 
-The current model is a small convolutional neural network trained on a subset of the BirdCLEF 2026 dataset.
+GET /jobs/{id}
+    Check processing status.
 
-The prototype currently recognizes five species:
+GET /observations?review_status=unreviewed
+    Retrieve observations awaiting human review.
+
+GET /observations/{id}
+    Retrieve observation and recording metadata.
+
+GET /observations/{id}/audio
+    Retrieve the exact audio segment associated with an observation.
+
+GET /observations/{id}/spectrogram
+    Generate a spectrogram for the observation.
+
+POST /observations/{id}/review
+    Record a human review decision.
+```
+
+This separates the client-facing API from the processing system. ML inference does not run inside the recording-upload request.
+
+## Processing architecture
+
+A separate worker handles processing jobs:
+
+```text
+API
+ |
+ | create job
+ v
+SQLite
+ |
+ v
+Worker
+ |
+ +--> load recording
+ |
+ +--> run inference
+ |
+ +--> create observations
+ |
+ +--> store model version
+ |
+ +--> mark job complete
+```
+
+Jobs have explicit lifecycle states:
+
+```text
+queued → processing → completed
+                  ↘ failed
+```
+
+Failures are persisted with the job so that processing errors can be inspected and retried rather than being lost with an HTTP request.
+
+## Model
+
+The current model is a small convolutional neural network trained on a subset of the **BirdCLEF 2026** dataset.
+
+It currently recognizes five species:
 
 * Bananaquit (`banana`)
 * Ferruginous Pygmy Owl (`fepowl`)
@@ -92,7 +122,7 @@ The prototype currently recognizes five species:
 * Osprey (`osprey`)
 * Southern Lapwing (`soulap1`)
 
-The model operates on 5-second audio windows and produces an observation containing:
+The model analyzes 5-second audio windows and produces observations containing:
 
 * predicted species
 * confidence
@@ -100,66 +130,31 @@ The model operates on 5-second audio windows and produces an observation contain
 * model version
 * review status
 
-The inference layer is separated from the API and worker so that the model can be replaced without redesigning the surrounding platform.
+The inference implementation is separated from the API and worker so that the model can be replaced without redesigning the surrounding platform.
 
-## Human-in-the-loop review
+## Dataset and baseline
 
-Automated predictions are explicitly stored as `unreviewed` observations.
-
-The review interface allows a reviewer to inspect:
-
-* predicted species
-* model confidence
-* model version
-* recording metadata
-* geographic coordinates
-* the exact audio segment associated with the prediction
-* a generated spectrogram
-
-The reviewer can mark an observation:
-
-* `confirmed`
-* `rejected`
-* `uncertain`
-
-The review queue is driven by observation state, so reviewed observations automatically disappear from the active queue.
-
-This creates a simple human-in-the-loop workflow rather than treating model predictions as ground truth.
-
-## Data and model experiments
-
-The initial ML experiments use a deterministic subset of BirdCLEF 2026.
-
-### Dataset subset
+The initial experiments use a deterministic subset of BirdCLEF 2026:
 
 * 5 species
-* 50 recordings selected per species
-* 250 recordings initially selected
+* 50 recordings per species
+* 250 recordings selected
 * 230 recordings at least 5 seconds long
 * recording-level train/validation/test split
 * 161 training recordings
 * 34 validation recordings
 * 35 test recordings
 
-Audio is converted to 32 kHz mono.
-
-### Spectrogram representation
-
-The current representation uses:
+Audio is converted to 32 kHz mono and represented as log-power spectrograms using:
 
 * 32 ms Hann window
 * 16 ms hop
-* log-power spectrogram
 * frequencies up to 12 kHz
 * per-example normalization
 
-### Model
+The CNN contains approximately 94,000 parameters.
 
-The current CNN is intentionally small at approximately 94,000 parameters.
-
-The experiment compared several temporal and audio augmentations. Random temporal cropping produced the strongest result in the initial experiments.
-
-Current best experiment:
+The strongest initial experiment used random temporal cropping:
 
 | Metric             | Result |
 | ------------------ | -----: |
@@ -168,25 +163,24 @@ Current best experiment:
 | Recording accuracy |  54.3% |
 | Recording macro F1 |  55.3% |
 
-These results are an early baseline rather than a production-quality species identification system.
+These results are an early baseline, not a production-quality species identification system.
 
-## Important limitation
+## Important limitation: closed-set classification
 
-The current classifier is a closed-set five-species model. It must choose one of those five classes even when a recording contains a species outside the training set.
+The current classifier must select one of its five known classes even when a recording contains another species.
 
-For example, the repository includes recordings used during platform testing that are not members of the five training classes. Low-confidence predictions on those recordings demonstrate an important limitation of closed-set classification rather than evidence of a correct identification.
+This means a low-confidence prediction can be more informative than a high-confidence prediction about an incorrect closed-set classification.
 
-The review workflow therefore treats predictions as hypotheses requiring human validation.
+The platform therefore treats ML predictions as **hypotheses requiring human validation**, rather than ground truth.
 
-A production biodiversity system would need mechanisms such as:
+A production system would likely need additional mechanisms such as:
 
+* event detection
 * unknown / out-of-distribution detection
 * confidence calibration
-* event detection
 * overlapping-species handling
-* improved representations
-* larger and more geographically diverse datasets
-* domain-expert review and feedback
+* larger and more geographically diverse training data
+* domain-expert feedback
 
 ## Project structure
 
@@ -203,8 +197,7 @@ bird-acoustic-monitoring/
 │   └── static/
 │       └── review.html
 ├── data/
-│   ├── metadata.csv
-│   └── ...
+│   └── metadata.csv
 ├── scripts/
 │   ├── download_subset.py
 │   ├── evaluate.py
@@ -219,15 +212,14 @@ bird-acoustic-monitoring/
 │       ├── audio.py
 │       ├── dataset.py
 │       ├── inference.py
-│       ├── model.py
-│       └── ...
+│       └── model.py
 ├── requirements.txt
 └── README.md
 ```
 
 ## Running locally
 
-Create and activate a Python 3.12 virtual environment, then install the dependencies:
+Install the Python dependencies in a Python 3.12 environment:
 
 ```bash
 pip install -r requirements.txt
@@ -239,95 +231,84 @@ Start the API:
 PYTHONPATH=src uvicorn api.main:app --reload
 ```
 
-The API is available at:
+API:
 
 ```text
 http://127.0.0.1:8000
 ```
 
-The interactive API documentation is available at:
+Interactive API documentation:
 
 ```text
 http://127.0.0.1:8000/docs
 ```
 
-The human review interface is available at:
+Human review interface:
 
 ```text
 http://127.0.0.1:8000/review
 ```
 
-Start the processing worker separately:
+Start the processing worker in a second terminal:
 
 ```bash
 PYTHONPATH=src python -m api.run_worker
 ```
 
-## Future platform work
+## Design decisions
 
-The current prototype deliberately keeps the infrastructure small. Potential next steps include:
+### Keep the infrastructure small
 
-### Event detection
+The prototype deliberately uses SQLite, local filesystem storage, and a polling worker rather than introducing distributed infrastructure prematurely.
 
-Move from fixed-window classification toward:
+The goal is to demonstrate the system boundaries and workflow first.
+
+In a production deployment, these interfaces could be backed by PostgreSQL, object storage, and a managed job queue without changing the core observation/review model.
+
+### Separate ML from platform code
+
+The inference layer is intentionally isolated from the API and worker.
+
+This makes it possible to change:
+
+* model architecture
+* model weights
+* preprocessing
+* inference strategy
+
+without coupling those changes to the recording and observation APIs.
+
+### Treat model output as provisional
+
+Observations carry both confidence and model version, and begin in an `unreviewed` state.
+
+This provides an explicit boundary between automated inference and domain-expert validation.
+
+## Future work
+
+The most important next step is moving from fixed-window classification toward **event-based detection**:
 
 ```text
-long recording
-      |
-      v
-candidate vocalization detection
-      |
-      v
-species classification
-      |
-      v
-observation
+Long recording
+      ↓
+Candidate vocalization detection
+      ↓
+Species classification
+      ↓
+Observation
+      ↓
+Human review
 ```
 
-This would allow long field recordings to produce observations only when candidate biological events are detected.
-
-### Production storage
-
-Replace local filesystem storage and SQLite with:
+Other potential extensions include:
 
 * object storage for recordings and derived artifacts
-* PostgreSQL for metadata and observations
-
-The storage abstraction is intentionally kept separate from API logic to make this transition straightforward.
-
-### Scalable processing
-
-The current worker polls a local database. A production deployment could replace this with a managed queue while preserving the same job lifecycle:
-
-```text
-queued → processing → completed
-                  ↘ failed
-```
-
-### Model provenance and monitoring
-
-Future observations could include additional provenance such as:
-
-* model hash
-* training dataset version
-* preprocessing version
-* inference configuration
-* calibration information
-
-This would make model outputs reproducible and auditable as models evolve.
-
-### Geospatial analysis
-
-Recording coordinates could support:
-
-* spatial filtering
-* habitat/ecological context
-* geographic observation aggregation
-* integration with GIS workflows
-
-### Review feedback
-
-Human decisions could eventually feed back into model evaluation and retraining, creating a continuous improvement loop between automated analysis and domain expertise.
+* PostgreSQL for metadata
+* managed asynchronous job queues
+* richer model provenance
+* geospatial observation queries
+* model calibration and monitoring
+* reviewer feedback for model evaluation and retraining
 
 ## Technology
 
@@ -336,8 +317,8 @@ Human decisions could eventually feed back into model evaluation and retraining,
 * SQLAlchemy
 * SQLite
 * PyTorch
-* SciPy
 * NumPy
+* SciPy
 * SoundFile
 * Matplotlib
 * scikit-learn
@@ -345,12 +326,8 @@ Human decisions could eventually feed back into model evaluation and retraining,
 
 ## Status
 
-This is an actively developed prototype exploring the intersection of:
+**Working prototype.**
 
-* machine learning
-* passive acoustic monitoring
-* biodiversity data platforms
-* human-in-the-loop scientific workflows
-* cloud-oriented backend architecture
+The current system demonstrates the complete path from wildlife recording to ML prediction to human-reviewed observation.
 
-The emphasis is on building the smallest useful system around an ML model rather than optimizing the classifier in isolation.
+The project is intentionally focused on building the smallest useful platform around an ML model rather than optimizing the classifier in isolation.
